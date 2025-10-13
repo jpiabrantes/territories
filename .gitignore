@@ -1,0 +1,6 @@
+.DS_Store
+.venv/
+**__pycache__
+src/executable
+src/compile.sh
+**.so
