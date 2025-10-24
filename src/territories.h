@@ -12,7 +12,6 @@
 // ========== CORE CONSTANTS ==========
 
 // Game Constants
-#define N_ALLELES 4
 #define K 0.07167543
 #define MAX_GROWTH_DURATION 70
 #define STARTING_DAY 55
@@ -33,9 +32,9 @@
 // Rendering Constants
 #define FRAME_RATE 60
 #define TILE_SIZE 64
-#define SCREEN_WIDTH 2080
+#define SCREEN_WIDTH 1280
 #define SCREEN_HEIGHT 720
-#define GAME_WIDTH 1800
+#define GAME_WIDTH 1000
 #define GAME_HEIGHT 720
 #define SPRITE_SIZE 128
 
@@ -115,10 +114,11 @@ typedef struct {
     float food_stored;
     float food_eaten;
     float avg_population;
-    float pop_last_summer_day;
-    float pop_last_winter_day;
+    float max_pop;
+    float min_pop;
     float total_reward;
     float life_expectancy;
+    float genetic_diversity;
 } Log;
 
 typedef struct {
@@ -131,8 +131,8 @@ typedef struct {
     float food_stored;
     float food_eaten;
     float avg_population;
-    float pop_last_summer_day;
-    float pop_last_winter_day;
+    float max_pop;
+    float min_pop;
     float total_reward;
     float agent_life_expectancy;
     float agent_n;
@@ -168,7 +168,6 @@ typedef struct {
     bool tracking_mode;
     int tracking_pid;
     bool is_paused;
-    bool grid_mode;
 } Client;
 
 // Forward declarations
@@ -208,6 +207,7 @@ struct Territories {
     unsigned short* family_sizes;
     unsigned short* prev_family_sizes;
     int n_genes;
+    int n_alleles;
     int width;
     int height;
     int tick;
@@ -219,6 +219,8 @@ struct Territories {
     int max_ep_length;
     int next_max_ep_length;
     int* reserved_roles;
+    char map_name[64];
+    bool reward_growth_rate;
 };
 
 // ========== UTILITY FUNCTIONS ==========
@@ -293,8 +295,8 @@ int spawn_agent(AgentManager* am, int r, int c, int n_genes) {
     agent->r = r;
     agent->c = c;
     agent->dir = (Direction)(rand() % 4); // Random direction between DIR_UP (0) and DIR_LEFT (3)
-    agent->hp = MAX_HP;
-    agent->hp_max = MAX_HP;
+    agent->hp = 1;
+    agent->hp_max = 1;
     agent->satiation = MAX_SATIATION;
     agent->max_satiation = MAX_SATIATION;
     agent->age = 0;
@@ -315,15 +317,15 @@ void kill_agent(AgentManager* am, int pid) {
     // Note: alive_pids array will be updated later via update_alive_pids()
 
     Agent *agent = &am->env->agents[pid];
-    if (agent->role == 0) {
-        int dna_adr = 0;
-        int multiplier = 1;
-        for (int j = 0; j < am->env->n_genes; j++){
-            dna_adr += multiplier * am->env->dnas[pid*am->env->n_genes + j];
-            multiplier *= N_ALLELES;
-        }
-        am->env->reserved_roles[dna_adr] -= 1;
-    }
+    // if (agent->role == 0) {
+    //     int dna_adr = 0;
+    //     int multiplier = 1;
+    //     for (int j = 0; j < am->env->n_genes; j++){
+    //         dna_adr += multiplier * am->env->dnas[pid*am->env->n_genes + j];
+    //         multiplier *= N_ALLELES;
+    //     }
+    //     am->env->reserved_roles[dna_adr] -= 1;
+    // }
     am->env->stats.agent_life_expectancy += agent->age;
     am->env->stats.agent_n += 1;
 }
@@ -485,28 +487,32 @@ void agent_reproduce(int pid, Territories* env) {
     int child_pid = spawn_agent(env->agent_manager, new_r, new_c, env->n_genes);
     env->pids_2d[new_r*env->width + new_c] = child_pid;
 
-    int dna_adr = 0;
-    int multiplier = 1;
-    for (int j = 0; j < env->n_genes; j++){
-        int p = rand() % 2;
-        env->dnas[child_pid*env->n_genes + j] = p == 0 ? env->dnas[pid*env->n_genes + j] : env->dnas[mate_pid*env->n_genes + j];
-        dna_adr += multiplier * env->dnas[child_pid*env->n_genes + j];
-        multiplier *= N_ALLELES;
-    }
+    // int dna_adr = 0;
+    // int multiplier = 1;
+    // for (int j = 0; j < env->n_genes; j++){
+    //     int p = rand() % 2;
+    //     env->dnas[child_pid*env->n_genes + j] = p == 0 ? env->dnas[pid*env->n_genes + j] : env->dnas[mate_pid*env->n_genes + j];
+    //     dna_adr += multiplier * env->dnas[child_pid*env->n_genes + j];
+    //     multiplier *= env->n_alleles;
+    // }
     Agent* child = &env->agents[child_pid];
-    if (env->reserved_roles[dna_adr] < 2) {
-        child->role = 0;
-        env->reserved_roles[dna_adr] += 1;
-    }
-    else {
-        child->role = rand() % (env->n_roles - 1) + 1;
-    }
+    child->role = rand() % env->n_roles;
+    // if (env->reserved_roles[dna_adr] < 2) {
+    //     child->role = 0;
+    //     env->reserved_roles[dna_adr] += 1;
+    // }
+    // else {
+    //     child->role = rand() % (env->n_roles - 1) + 1;
+    // }
     // this runs always after the dna is assigned
     kinship_matrix_update(env->agent_manager, child_pid);
     if (env->tick < env->min_ep_length) {
         env->stats.births += 1;
     }
 }
+
+
+
 
 void agent_mine(Agent *agent, Territories* env) {
     if (agent->stone_carried >= MAX_STONE_CARRYING_CAPACITY) return;
@@ -598,7 +604,26 @@ void agent_attack(Agent *agent, Territories* env) {
 
 // ========== OBSERVATION AND REWARDS ==========
 
-void compute_rewards(Territories* env) {
+void _delta_rewards(Territories* env) {
+    AgentManager* am = env->agent_manager;
+    unsigned char (*kinship_matrix_2d)[env->max_agents] = (unsigned char(*)[env->max_agents])env->kinship_matrix;
+    for (int pid = 0; pid < env->max_agents; pid++) {
+        if (am->alive_mask[pid] || env->terminals[pid]) {
+            env->family_sizes[pid] = 0;
+            for (int j = 0; j < am->alive_count; j++) {
+                int pid2 = am->alive_pids[j];
+                env->family_sizes[pid] += kinship_matrix_2d[pid][pid2];
+            }
+            env->rewards[pid] = ((float)env->family_sizes[pid] - (float)env->prev_family_sizes[pid]) / ((float) env->n_genes);
+            if (env->tick < env->min_ep_length) {
+                env->stats.total_reward += env->rewards[pid];
+            }
+       }
+   }
+   memcpy(env->prev_family_sizes, env->family_sizes, env->max_agents * sizeof(unsigned short));
+}
+
+void _growth_rate_rewards(Territories* env) {
     AgentManager* am = env->agent_manager;
     unsigned char (*kinship_matrix_2d)[env->max_agents] = (unsigned char(*)[env->max_agents])env->kinship_matrix;
     for (int pid = 0; pid < env->max_agents; pid++) {
@@ -622,9 +647,17 @@ void compute_rewards(Territories* env) {
             if (env->tick < env->min_ep_length) {
                 env->stats.total_reward += env->rewards[pid];
             }
-        }
-    }
-    memcpy(env->prev_family_sizes, env->family_sizes, env->max_agents * sizeof(unsigned short));
+       }
+   }
+   memcpy(env->prev_family_sizes, env->family_sizes, env->max_agents * sizeof(unsigned short));
+}
+
+void compute_rewards(Territories* env) {
+     if (env->reward_growth_rate) {
+        _growth_rate_rewards(env);
+     } else {
+        _delta_rewards(env);
+     }
 }
 
 void compute_all_obs(Territories* env) {
@@ -656,21 +689,22 @@ void compute_all_obs(Territories* env) {
                     Agent* agent2 = &env->agents[pid2];
                     obs[obs_adr+5] = float_to_byte(kinship_get(env, pid, pid2, env->n_genes), 0, 1.0f);
                     obs[obs_adr+6] = float_to_byte((float)agent2->hp, 0, MAX_HP);
-                    obs[obs_adr+7] = float_to_byte((float)agent2->satiation, 0, MAX_SATIATION);
-                    obs[obs_adr+8] = agent2->dir + 1; // 0 is no agent
-                    obs[obs_adr+9] = agent2->role + 1; // 0 is no agent
+                    obs[obs_adr+7] = float_to_byte((float)agent2->age, 0, 100);
+                    obs[obs_adr+8] = float_to_byte((float)agent2->satiation, 0, MAX_SATIATION);
+                    obs[obs_adr+9] = agent2->dir + 1; // 0 is no agent
+                    obs[obs_adr+10] = agent2->role + 1; // 0 is no agent
                     for (int i = 0; i < env->n_genes; i++) {
-                        obs[obs_adr+10+i] = (float)env->dnas[pid2*env->n_genes + i] + 1; // 0 is no agent
+                        obs[obs_adr+11+i] = (float)env->dnas[pid2*env->n_genes + i] + 1; // 0 is no agent
                     }
                 } else {
-                    for (int i = 0; i < 5; i++) {
+                    for (int i = 0; i < 6; i++) {
                         obs[obs_adr+5+i] = 0;
                     }
                     for (int i = 0; i < env->n_genes; i++) {
-                        obs[obs_adr+10+i] = 0;
+                        obs[obs_adr+11+i] = 0;
                     }
                 }
-                obs_adr += 10 + env->n_genes;
+                obs_adr += 11 + env->n_genes;
             }
         }
         // Self Information
@@ -678,12 +712,13 @@ void compute_all_obs(Territories* env) {
         obs[obs_adr+1] = float_to_byte((float)agent->stone_carried, 0, MAX_STONE_CARRYING_CAPACITY);
         obs[obs_adr+2] = float_to_byte((float)agent->hp, 0, MAX_HP);
         obs[obs_adr+3] = float_to_byte((float)agent->satiation, 0, MAX_SATIATION);
-        obs[obs_adr+4] = (float)agent->role;
+        obs[obs_adr+4] = float_to_byte((float)agent->age, 0, 100);
+        obs[obs_adr+5] = (float)agent->role;
         for (int i = 0; i < env->n_genes; i++) {
-            obs[obs_adr+5+i] = (float)env->dnas[pid*env->n_genes + i];
+            obs[obs_adr+6+i] = (float)env->dnas[pid*env->n_genes + i];
         }
 
-        obs_adr += 5 + env->n_genes;
+        obs_adr += 6 + env->n_genes;
         // Cultural Knowledge
         obs[obs_adr]   = float_to_byte((float)agent->r, 0, env->height);
         obs[obs_adr+1] = float_to_byte((float)agent->c, 0, env->width);
@@ -711,21 +746,46 @@ void init(Territories* env) {
     assert(env->min_ep_length > 0);
     assert(env->min_ep_length < env->max_ep_length);
     assert(env->extinction_reward < 0);
+    assert(env->n_alleles > 0);
     
-    env->obs_size = (2*VISION_RADIUS+1)*(2*VISION_RADIUS+1)*(10+env->n_genes)+5+env->n_genes+5;
+    env->obs_size = (2*VISION_RADIUS+1)*(2*VISION_RADIUS+1)*(11+env->n_genes)+6+env->n_genes+5;
     env->agents = (Agent*)calloc(env->max_agents, sizeof(Agent));
-    env->reserved_roles = (int*)calloc((pow(N_ALLELES, env->n_genes)-1), sizeof(int));
+    // env->reserved_roles = (int*)calloc((pow(N_ALLELES, env->n_genes)-1), sizeof(int));
     env->family_sizes = (unsigned short*)calloc(env->max_agents, sizeof(unsigned short));
     env->prev_family_sizes = (unsigned short*)calloc(env->max_agents, sizeof(unsigned short));
 
     // Create map
     env->tile_props = (unsigned short*)calloc(env->width * env->height * 4, sizeof(unsigned short)); // 4 types of tile properties: crop, stored food, stone, wall_hp
-    env->is_soil = read_is_soil(env->width, env->height);
-    env->dnas = (unsigned char*)calloc(env->max_agents * env->n_genes, sizeof(unsigned char));
+    env->is_soil = read_is_soil(env->width, env->height, env->map_name);
     
     // Initialize pids arrays
     env->pids_2d = (short*)calloc(env->width * env->height, sizeof(short));
     env->agent_manager = agent_manager_init(env);
+}
+
+float compute_genetic_diversity(Territories* env) {
+    AgentManager* am = env->agent_manager;
+    float diversity = 0;
+    int n_alleles = env->n_alleles;
+    if (am->alive_count == 0) return 0.0f;
+    int *allele_counts = calloc(env->n_genes * n_alleles , sizeof(int));
+
+    for (int i = 0; i < am->alive_count; i++) {
+        int pid = am->alive_pids[i];
+        for (int j = 0; j < env->n_genes; j++) {
+            allele_counts[j*n_alleles + env->dnas[pid*env->n_genes + j]] += 1;
+        }
+    }
+
+    for (int l = 0; l < env->n_genes; l++) {
+        for (int i = 0; i < n_alleles; i++) {
+            if (allele_counts[l*n_alleles + i] == 0) continue;
+            float prob = (float)allele_counts[l*n_alleles + i] / (float)am->alive_count;
+            diversity += -prob * log2(prob);
+        }
+    }
+    free(allele_counts);
+    return diversity;
 }
 
 void update_episode_logs(Territories* env) {
@@ -737,8 +797,8 @@ void update_episode_logs(Territories* env) {
     env->log.wall_destroyed += env->stats.wall_destroyed;
     env->log.food_stored += env->stats.food_stored;
     env->log.food_eaten += env->stats.food_eaten;
-    env->log.pop_last_summer_day += env->stats.pop_last_summer_day;
-    env->log.pop_last_winter_day += env->stats.pop_last_winter_day;
+    env->log.max_pop += env->stats.max_pop;
+    env->log.min_pop += env->stats.min_pop;
     env->log.avg_population += env->stats.avg_population / (float)(min(env->tick, env->min_ep_length));
     env->log.total_reward += env->stats.total_reward;
     env->stats.births = 0;
@@ -749,8 +809,8 @@ void update_episode_logs(Territories* env) {
     env->stats.wall_destroyed = 0;
     env->stats.food_stored = 0;
     env->stats.food_eaten = 0;
-    env->stats.pop_last_summer_day = 0;
-    env->stats.pop_last_winter_day = 0;
+    env->stats.max_pop = 0;
+    env->stats.min_pop = 0;
     env->stats.avg_population = 0;
     env->stats.total_reward = 0;
     env->log.n += 1;
@@ -763,6 +823,7 @@ void update_episode_logs(Territories* env) {
             env->stats.agent_n += 1;
         }
     }
+    env->log.genetic_diversity += compute_genetic_diversity(env);
     env->log.life_expectancy =  env->stats.agent_n > 0 ? env->stats.agent_life_expectancy / env->stats.agent_n : 0;
     env->stats.agent_life_expectancy = 0;
     env->stats.agent_n = 0;
@@ -770,7 +831,7 @@ void update_episode_logs(Territories* env) {
 
 void c_reset(Territories* env) {
     memset(env->truncations, 0, env->max_agents * sizeof(unsigned char));
-    memset(env->reserved_roles, 0, (pow(N_ALLELES, env->n_genes)-1) * sizeof(int));
+    // memset(env->reserved_roles, 0, (pow(N_ALLELES, env->n_genes)-1) * sizeof(int));
     memset(env->prev_family_sizes, 0, env->max_agents * sizeof(unsigned short));
     env->tick = 0;
     env->is_winter = false;
@@ -810,6 +871,29 @@ void c_reset(Territories* env) {
     }
     kinship_matrix_reset(env);
     agent_manager_reset(env->agent_manager);
+    // for (int i = 0; i < 4; i++) {
+    //     for (int j = 0; j < 3; j++) {
+    //         while (true) {
+    //             int adr = rand() % (env->width * env->height);
+    //             int r = adr / env->width;
+    //             int c = adr % env->width;
+    //             if (tile_is_blocked(env, r, c)) continue;
+    //             int pid = spawn_agent(env->agent_manager, r, c, env->n_genes);
+    //             env->pids_2d[r*env->width + c] = pid;
+    //             env->agents[pid].role = rand() % env->n_roles;
+    //             for (int g = 0; g < env->n_genes; g++) {
+    //                 env->dnas[pid*env->n_genes + g] = rand() % env->n_alleles;
+    //             }
+    //             // env->dnas[pid*env->n_genes + 0] = i & 1;
+    //             // env->dnas[pid*env->n_genes + 1] = (i >> 1) & 1;
+    //             env->agents[pid].age = REPRODUCTION_AGE;
+    //             env->agents[pid].hp_max = MAX_HP;
+    //             env->agents[pid].hp = MAX_HP;
+    //             kinship_matrix_update(env->agent_manager, pid);
+    //             break;
+    //         }
+    //     }
+    // }
     for (int i = 0; i < 4; i++) {
         while (true) {
             int adr = rand() % (env->width * env->height);
@@ -824,20 +908,15 @@ void c_reset(Territories* env) {
             env->pids_2d[r*env->width + c] = pid;
             int pid2 = spawn_agent(env->agent_manager, r_2, c_2, env->n_genes);
             env->pids_2d[r_2*env->width + c_2] = pid2;
-            int dna_adr = 0;
-            int multiplier = 1;
             for (int j = 0; j < env->n_genes; j++){
-                int allele = rand() % N_ALLELES;
+                int allele = rand() % env->n_alleles;
                 env->dnas[pid*env->n_genes + j] = allele;
                 env->dnas[pid2*env->n_genes + j] = allele;                
-                dna_adr += multiplier * allele;
-                multiplier *= N_ALLELES;
             }
             Agent* agent1 = &env->agents[pid];
             Agent* agent2 = &env->agents[pid2];
             agent1->role = 0;
             agent2->role = 0;
-            env->reserved_roles[dna_adr] = 2;
             kinship_matrix_update(env->agent_manager, pid);
             kinship_matrix_update(env->agent_manager, pid2);
             break;
@@ -877,20 +956,16 @@ void c_step(Territories* env) {
 
     if (!env->is_winter && day_number >= SUMMER_DURATION) { // summer from 0 to 99
         env->is_winter = true;
-        if (env->tick < env->min_ep_length) {
-            env->stats.pop_last_summer_day = max(env->stats.pop_last_summer_day, am->alive_count);
-        }
     }
     else if (env->is_winter && day_number < SUMMER_DURATION) { // winter from 100 to 199
         env->is_winter = false;
         start_crop_growth(env);
-        if (env->tick < env->min_ep_length) {
-            env->stats.pop_last_winter_day = max(env->stats.pop_last_winter_day, am->alive_count);
-        }
     }
     env->tick++;
     if (env->tick < env->min_ep_length) {
         env->stats.avg_population += am->alive_count;
+        env->stats.max_pop = max(env->stats.max_pop, am->alive_count);
+        env->stats.min_pop = min(env->stats.min_pop, am->alive_count);
     }
     // randomise the order in which actions are taken
     shuffle(am->alive_pids, am->alive_count);
@@ -900,10 +975,13 @@ void c_step(Territories* env) {
     for (int i = 0; i < initial_alive_count; i++) {
         unsigned short pid = am->alive_pids[i];
         Agent* agent = &env->agents[pid];
-        agent->age++;
         if (agent->hp <= 0) continue; // agent was killed this step
         assert(agent->satiation > 0);
-        
+        agent->age++;
+        if (agent->age == REPRODUCTION_AGE) {
+            agent->hp_max = MAX_HP;
+            agent->hp = MAX_HP;
+        }
         agent->satiation -= METABOLISM_RATE;
         // Agents eat
         if (agent->food_carried > 0) {
@@ -1141,12 +1219,12 @@ Client* make_client(Territories* env) {
     fill_the_background(env, client, client->background_summer, false);
     fill_the_background(env, client, client->background_winter, true);
 
-    client->char_bases = (Texture2D*)calloc(N_ALLELES * env->n_genes, sizeof(Texture2D));
+    client->char_bases = (Texture2D*)calloc(env->n_alleles * env->n_genes, sizeof(Texture2D));
     char char_filename[64];
     for (int i = 0; i < env->n_genes; i++) {
-        for (int a = 0; a < N_ALLELES ; a++) {
+        for (int a = 0; a < env->n_alleles ; a++) {
             if (i > 0 && a == 3){
-                client->char_bases[i*N_ALLELES + a].id = 0; // empty texture
+                client->char_bases[i*env->n_alleles + a].id = 0; // empty texture
                 continue;
             }
             if (i == 0) {
@@ -1157,7 +1235,7 @@ Client* make_client(Territories* env) {
                 assert(i == 2);
                 snprintf(char_filename, sizeof(char_filename), "resources/char/char_a_p1_1out_pfpn_v0%d_128.png", a);
             }           
-            client->char_bases[i*N_ALLELES + a] = LoadTexture(char_filename);
+            client->char_bases[i*env->n_alleles + a] = LoadTexture(char_filename);
         }
     }
     
@@ -1358,43 +1436,6 @@ void render_tracking_mode(Client* client, Territories* env) {
     }
 }
 
-void render_grid(Client* client, Territories* env) {
-    float half_screen_w = GAME_WIDTH / (2.0f * client->camera.zoom);
-    float half_screen_h = GAME_HEIGHT / (2.0f * client->camera.zoom);
-    float left = client->camera.target.x - half_screen_w;
-    float right = client->camera.target.x + half_screen_w;
-    float top = client->camera.target.y - half_screen_h;
-    float bottom = client->camera.target.y + half_screen_h;
-
-    int start_c = floorf(left / TILE_SIZE);
-    int end_c = ceilf(right / TILE_SIZE);
-    int start_r = floorf(top / TILE_SIZE);
-    int end_r = ceilf(bottom / TILE_SIZE);
-    
-    if (!client->tracking_mode) {
-        start_c = fmaxf(0, start_c);
-        end_c = fminf(env->width, end_c);
-        start_r = fmaxf(0, start_r);
-        end_r = fminf(env->height, end_r);
-    }
-
-    // Draw vertical grid lines
-    for (int c = start_c; c <= end_c; c++) {
-        float x = c * TILE_SIZE;
-        Vector2 start = {x, top};
-        Vector2 end = {x, bottom};
-        DrawLineEx(start, end, 1.0f, (Color){0, 0, 0, 50}); // Semi-transparent gray
-    }
-
-    // Draw horizontal grid lines
-    for (int r = start_r; r <= end_r; r++) {
-        float y = r * TILE_SIZE;
-        Vector2 start = {left, y};
-        Vector2 end = {right, y};
-        DrawLineEx(start, end, 1.0f, (Color){0, 0, 0, 50}); // Semi-transparent gray
-    }
-}
-
 int process_tracking_input(Client* client, Territories* env) {
     if (IsKeyPressed(KEY_D)) {
         int initial_pid = (client->tracking_pid + 1) % env->max_agents;
@@ -1580,10 +1621,10 @@ void render_stats_panel(Territories* env) {
         DrawText("Population Stats:", text_x, text_y, 18, YELLOW);
         text_y += line_height + 10;
         
-        DrawText(TextFormat("Summer Peak: %.0f", env->stats.pop_last_summer_day), text_x, text_y, 16, LIGHTGRAY);
+        DrawText(TextFormat("Max Population: %.0f", env->stats.max_pop), text_x, text_y, 16, LIGHTGRAY);
         text_y += line_height;
         
-        DrawText(TextFormat("Winter Peak: %.0f", env->stats.pop_last_winter_day), text_x, text_y, 16, LIGHTGRAY);
+        DrawText(TextFormat("Min Population: %.0f", env->stats.min_pop), text_x, text_y, 16, LIGHTGRAY);
         text_y += line_height;
         
         DrawText(TextFormat("Avg Population: %.1f", env->stats.avg_population), text_x, text_y, 16, LIGHTGRAY);
@@ -1611,9 +1652,6 @@ int c_render(Territories* env) {
     }
     if (IsKeyPressed(KEY_T)) {
         client->tracking_mode = !client->tracking_mode;
-    }
-    if (IsKeyPressed(KEY_G)) {
-        client->grid_mode = !client->grid_mode;
     }
     if (client->tracking_mode) {
         bool found = false;
@@ -1653,12 +1691,6 @@ int c_render(Territories* env) {
         render_fixed_mode(client, env);
         control_camera_pos(client);
     }
-    
-    // Render grid if grid mode is enabled
-    if (client->grid_mode) {
-        render_grid(client, env);
-    }
-    
     // render agents and resources
     float half_screen_w = GAME_WIDTH / (2.0f * client->camera.zoom);
     float half_screen_h = GAME_HEIGHT / (2.0f * client->camera.zoom);
@@ -1720,7 +1752,7 @@ int c_render(Territories* env) {
 
                 for (int i = 0; i < env->n_genes; i++) {
                     int allele = env->dnas[pid*env->n_genes + i];
-                    Texture2D text = client->char_bases[i*N_ALLELES + allele];
+                    Texture2D text = client->char_bases[i*env->n_alleles + allele];
                     if (text.id != 0) {
                         DrawTextureRec(text, 
                             (Rectangle){0, sprite_r*SPRITE_SIZE, SPRITE_SIZE, SPRITE_SIZE}, 
@@ -1745,8 +1777,10 @@ int c_render(Territories* env) {
     return output;
 }
 
+
+
 // Required function. Should clean up anything you allocated
-// Do not free env->observations, actions, rewards, terminals, alive, kinship_matrix
+// Do not free env->observations, actions, rewards, terminals, alive, kinship_matrix, dnas
 // Those vectors were allocated by Python and will be freed by Python's garbage collector
 void c_close(Territories* env) {
     if (env->agent_manager != NULL) {
@@ -1756,7 +1790,6 @@ void c_close(Territories* env) {
         free(env->agent_manager);
     }
     free(env->agents);
-    free(env->dnas);
     free(env->pids_2d);
     free(env->is_soil);
     free(env->tile_props);
@@ -1769,7 +1802,7 @@ void c_close(Territories* env) {
         UnloadRenderTexture(client->background_winter);
         UnloadTexture(client->wall_sprite);
         UnloadTexture(client->food_sprite);
-        for (int i = 0; i < N_ALLELES * env->n_genes; i++) {
+        for (int i = 0; i < env->n_alleles * env->n_genes; i++) {
             UnloadTexture(client->char_bases[i]);
         }
         free(client->terrain_sprite_indices);

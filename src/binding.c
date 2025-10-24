@@ -14,6 +14,27 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
   env->max_ep_length = unpack(kwargs, "max_ep_length");
   env->render_mode = unpack(kwargs, "render_mode");
   env->extinction_reward = unpack(kwargs, "extinction_reward");
+  env->n_alleles = unpack(kwargs, "n_alleles");
+  env->reward_growth_rate = unpack(kwargs, "reward_growth_rate");
+
+  // Extract optional map_name string
+  PyObject *map_name_obj = PyDict_GetItemString(kwargs, "map_name");
+  if (map_name_obj != NULL && map_name_obj != Py_None) {
+    if (!PyUnicode_Check(map_name_obj)) {
+      PyErr_SetString(PyExc_TypeError, "map_name must be a string");
+      return -1;
+    }
+    const char *map_name_str = PyUnicode_AsUTF8(map_name_obj);
+    if (map_name_str == NULL) {
+      return -1;
+    }
+    strncpy(env->map_name, map_name_str, sizeof(env->map_name) - 1);
+    env->map_name[sizeof(env->map_name) - 1] = '\0'; // Ensure null termination
+  } else {
+    // If not provided or None, set to empty string (will be treated as NULL by
+    // read_is_soil)
+    env->map_name[0] = '\0';
+  }
 
   PyObject *alive = PyTuple_GetItem(args, 6);
   if (!PyObject_TypeCheck(alive, &PyArray_Type)) {
@@ -43,6 +64,30 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
   }
   env->kinship_matrix = PyArray_DATA(kinship_matrix);
 
+  PyObject *dnas = PyTuple_GetItem(args, 8);
+  if (!PyObject_TypeCheck(dnas, &PyArray_Type)) {
+    PyErr_SetString(PyExc_TypeError, "DNAs must be a NumPy array");
+    return -1;
+  }
+  PyArrayObject *dnas_array = (PyArrayObject *)dnas;
+  if (!PyArray_ISCONTIGUOUS(dnas_array)) {
+    PyErr_SetString(PyExc_ValueError, "DNAs must be contiguous");
+    return -1;
+  }
+  if (PyArray_NDIM(dnas_array) != 2) {
+    PyErr_SetString(PyExc_ValueError, "DNAs must be 2D");
+    return -1;
+  }
+  if (PyArray_DIM(dnas_array, 0) != env->max_agents) {
+    PyErr_SetString(PyExc_ValueError, "DNAs must have max_agents rows");
+    return -1;
+  }
+  if (PyArray_DIM(dnas_array, 1) != env->n_genes) {
+    PyErr_SetString(PyExc_ValueError, "DNAs must have n_genes columns");
+    return -1;
+  }
+  env->dnas = PyArray_DATA(dnas_array);
+
   init(env);
   return 0;
 }
@@ -56,12 +101,13 @@ static int my_log(PyObject *dict, Log *log) {
   assign_to_dict(dict, "wall_destroyed", log->wall_destroyed);
   assign_to_dict(dict, "food_stored", log->food_stored);
   assign_to_dict(dict, "food_eaten", log->food_eaten);
-  assign_to_dict(dict, "pop_last_summer_day", log->pop_last_summer_day);
-  assign_to_dict(dict, "pop_last_winter_day", log->pop_last_winter_day);
+  assign_to_dict(dict, "max_pop", log->max_pop);
+  assign_to_dict(dict, "min_pop", log->min_pop);
   assign_to_dict(dict, "avg_population", log->avg_population);
   assign_to_dict(dict, "total_reward", log->total_reward);
   assign_to_dict(dict, "episode_length", log->episode_length);
   assign_to_dict(dict, "life_expectancy", log->life_expectancy);
+  assign_to_dict(dict, "genetic_diversity", log->genetic_diversity);
   return 0;
 }
 
@@ -87,10 +133,10 @@ static PyObject *my_get(PyObject *dict, Env *env) {
                        PyFloat_FromDouble(env->stats.food_stored));
   PyDict_SetItemString(dict, "stats_food_eaten",
                        PyFloat_FromDouble(env->stats.food_eaten));
-  PyDict_SetItemString(dict, "stats_pop_last_summer_day",
-                       PyFloat_FromDouble(env->stats.pop_last_summer_day));
-  PyDict_SetItemString(dict, "stats_pop_last_winter_day",
-                       PyFloat_FromDouble(env->stats.pop_last_winter_day));
+  PyDict_SetItemString(dict, "stats_max_pop",
+                       PyFloat_FromDouble(env->stats.max_pop));
+  PyDict_SetItemString(dict, "stats_min_pop",
+                       PyFloat_FromDouble(env->stats.min_pop));
   PyDict_SetItemString(dict, "stats_avg_population",
                        PyFloat_FromDouble(env->stats.avg_population));
 
@@ -243,14 +289,12 @@ static int my_put(Env *env, PyObject *args, PyObject *kwargs) {
   PyObject *stats_pop_last_summer_day_obj =
       PyDict_GetItemString(kwargs, "stats_pop_last_summer_day");
   if (stats_pop_last_summer_day_obj)
-    env->stats.pop_last_summer_day =
-        PyFloat_AsDouble(stats_pop_last_summer_day_obj);
+    env->stats.max_pop = PyFloat_AsDouble(stats_pop_last_summer_day_obj);
 
   PyObject *stats_pop_last_winter_day_obj =
       PyDict_GetItemString(kwargs, "stats_pop_last_winter_day");
   if (stats_pop_last_winter_day_obj)
-    env->stats.pop_last_winter_day =
-        PyFloat_AsDouble(stats_pop_last_winter_day_obj);
+    env->stats.min_pop = PyFloat_AsDouble(stats_pop_last_winter_day_obj);
 
   PyObject *stats_avg_population_obj =
       PyDict_GetItemString(kwargs, "stats_avg_population");

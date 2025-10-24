@@ -48,8 +48,8 @@ static Env* unpack_env(PyObject* args) {
 
 // Python function to initialize the environment
 static PyObject* env_init(PyObject* self, PyObject* args, PyObject* kwargs) {
-    if (PyTuple_Size(args) != 8) { // Changed from 6 to 8
-        PyErr_SetString(PyExc_TypeError, "Environment requires 7 arguments");
+    if (PyTuple_Size(args) != 9) { // Changed from 6 to 9
+        PyErr_SetString(PyExc_TypeError, "Environment requires 8 arguments");
         return NULL;
     }
 
