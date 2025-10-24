@@ -4,7 +4,7 @@
 
 An environment for kinship-aligned multi-agent reinforcement learning — where agents with diverging interests either learn to cooperate or see their lineage go extinct.
 
-The best place to understand why _Territories_ and follow the experimental results is the through the blog series: **Emerging a Society with MARL**.
+The best place to understand why _Territories_ and follow the experimental results is the through the blog series: **[Emerging a Society with MARL](https://x.com/joaoabrantis/status/1977771778618597438)**.
 
 The best place to understand RL environments written in C is by studying [PufferLib](https://puffer.ai/docs.html).
 
