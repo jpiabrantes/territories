@@ -487,14 +487,10 @@ void agent_reproduce(int pid, Territories* env) {
     int child_pid = spawn_agent(env->agent_manager, new_r, new_c, env->n_genes);
     env->pids_2d[new_r*env->width + new_c] = child_pid;
 
-    // int dna_adr = 0;
-    // int multiplier = 1;
-    // for (int j = 0; j < env->n_genes; j++){
-    //     int p = rand() % 2;
-    //     env->dnas[child_pid*env->n_genes + j] = p == 0 ? env->dnas[pid*env->n_genes + j] : env->dnas[mate_pid*env->n_genes + j];
-    //     dna_adr += multiplier * env->dnas[child_pid*env->n_genes + j];
-    //     multiplier *= env->n_alleles;
-    // }
+    for (int j = 0; j < env->n_genes; j++){
+        int p = rand() % 2;
+        env->dnas[child_pid*env->n_genes + j] = p == 0 ? env->dnas[pid*env->n_genes + j] : env->dnas[mate_pid*env->n_genes + j];
+    }
     Agent* child = &env->agents[child_pid];
     child->role = rand() % env->n_roles;
     // if (env->reserved_roles[dna_adr] < 2) {
